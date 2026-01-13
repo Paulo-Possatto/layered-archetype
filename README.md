@@ -57,7 +57,7 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 mvn archetype:generate \
     -DarchetypeGroupId=com.ppossatto \
     -DarchetypeArtifactId=layered-archetype \
-    -DarchetypeVersion=1.0.1 \
+    -DarchetypeVersion=1.0.2 \
     -DarchetypeRepository=https://maven.pkg.github.com/Paulo-Possatto/layered-archetype \
     -DgroupId=<your groupId> \
     -DartifactId=<your artifactId> \
