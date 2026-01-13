@@ -11,7 +11,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @DirtiesContext
 @Testcontainers(disabledWithoutDocker = true)
-@ActiveProfiles(value = {"local", "dev", "test"})
+@ActiveProfiles(value = {"local", "dev"})
 @Import(TestcontainersConfig.class)
 public class ApplicationIT {
 
