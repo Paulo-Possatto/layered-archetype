@@ -46,10 +46,22 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 - jacoco
 - spotbugs
 
+### Default values:
+
+- **server-port**: 8080
+- **application-name**: The same as the artifactId
+- **application-description**: "Project created with layered archetype"
+- **postgres-image**: postgres:16.11-alpine3.23
+
+### Services:
+
+- **PostgreSQL**: SQL database
+
 ## Prerequisites
 
 - JDK 21
 - Maven: 3.9.11
+- Docker
 
 ## Creating a project:
 
@@ -57,7 +69,7 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 mvn archetype:generate \
     -DarchetypeGroupId=com.ppossatto \
     -DarchetypeArtifactId=layered-archetype \
-    -DarchetypeVersion=1.0.2 \
+    -DarchetypeVersion=1.1.0 \
     -DarchetypeRepository=https://maven.pkg.github.com/Paulo-Possatto/layered-archetype \
     -DgroupId=<your groupId> \
     -DartifactId=<your artifactId> \
@@ -67,3 +79,18 @@ mvn archetype:generate \
     -Dapplication-description=<some app description, can be null> \
     -Dpostgres-image=<a postgres image for the testcontainer, can be null>
 ```
+
+### Setup
+
+After creating the project, add the values in the .env file under the .local directory to configure the correct
+environment variables for the docker compose and the application.
+
+When the .env file is filled correctly, add the file as the environment variables to run the project and run the 
+following command (after opening docker daemon...):
+
+```bash
+cd .local
+docker compose up -d
+```
+
+This will run the postgres service to use the application

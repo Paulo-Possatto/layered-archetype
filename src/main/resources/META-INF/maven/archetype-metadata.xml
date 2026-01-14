@@ -32,6 +32,15 @@
             </includes>
         </fileSet>
 
+        <fileSet filtered="true" packaged="false">
+            <directory>.local</directory>
+            <includes>
+                <include>**/*.yml</include>
+                <include>**/*.yaml</include>
+                <include>**/*.env</include>
+            </includes>
+        </fileSet>
+
         <fileSet filtered="true" packaged="true">
             <directory>src/main/java</directory>
             <includes>
