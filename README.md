@@ -56,6 +56,8 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 ### Services:
 
 - **PostgreSQL**: SQL database
+- **Adminer**: Database management
+- **Keycloak**: Authentication and authorization
 
 ## Prerequisites
 
@@ -69,7 +71,7 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 mvn archetype:generate \
     -DarchetypeGroupId=com.ppossatto \
     -DarchetypeArtifactId=layered-archetype \
-    -DarchetypeVersion=1.1.0 \
+    -DarchetypeVersion=1.2.0 \
     -DarchetypeRepository=https://maven.pkg.github.com/Paulo-Possatto/layered-archetype \
     -DgroupId=<your groupId> \
     -DartifactId=<your artifactId> \

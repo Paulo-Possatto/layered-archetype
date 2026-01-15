@@ -20,6 +20,12 @@ spring:
   flyway:
     clean-disabled: true
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:9999/realms/ #Your realm here
+
 logging:
   level:
     ${package}: DEBUG
