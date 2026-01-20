@@ -1,1 +1,5 @@
 # This properties file is only for the test lifecycle, so properties that are used only in testing
+cucumber:
+  plugin: pretty
+  glue: ${package}.cucumber.stepdefinitions
+  features: classpath:features

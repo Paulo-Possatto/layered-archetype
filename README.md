@@ -96,3 +96,46 @@ docker compose up -d
 ```
 
 This will run the postgres service to use the application
+
+## Test classes
+
+For this archetype, there is already pre-defined tests to run in different environments. And those are:
+
+### Local environment
+
+When testing in the local environment, the tests that the surefire and failsafe plugins will run are:
+
+- **Unit tests**: src/test/java/{package}/unit -> To validate individual units of the code.
+- **Integration tests**: src/test/java/{package}/integration -> To validate how multiple components or services interact with the application.
+- **Architecture tests**: src/test/java/{package}/architecture -> To validate if the project follows the layered architecture and design constraints.
+
+Those tests have the `@ActiveProfiles("local")` annotation, so they can only run in the local environment.
+
+You can create a pipeline to run these tests to validate functionality before merging with the develop branch.
+
+### Development environment
+
+For the dev environment, there are two tests to run with the pipeline:
+
+- **Contract tests**: src/test/java/{package}/contract -> To validate if the consumer and provider services adhere to a contract.
+- **Smoke tests**: src/test/java/{package}/smoke/SmokeDevTest.java -> To validate if the core functionalities of the application are working correctly.
+
+For the tests to run in the dev environment, the annotation `@ActiveProfiles("dev")` is added in the class.
+
+It will run in the pipeline from the develop branch to the release branch.
+
+### Pre-production environment
+
+For the quality-assurance (QA or pre-production) environment, there is also two types of tests to run:
+
+- **Smoke tests**: src/test/java/{package}/smoke/SmokeQaTest -> Same as the dev one, but more rigid.
+- **BDD tests (Cucumber/Gherkin)**: Behaviour-Driven Development
+  - **Step Definitions**: src/test/java/{package}/cucumber/stepdefinitions -> What each step should do to validate the functionality.
+  - **Features**: src/test/resources/features -> Where the feature, scenario and steps are defined.
+
+In the case of the BDD tests, it'll be more useful to create scenarios of bugs or something failing, because that 
+guarantees the problem will not happen again.
+
+QA tests need to run in the pipeline before production, so it's better to create a trigger when a PR to the main branch 
+is created. The QA tests are annotated with `@ActiveProfiles("qa")`, and you're free to add more tests, like regression
+tests, load tests...

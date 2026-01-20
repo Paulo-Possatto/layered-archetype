@@ -81,6 +81,20 @@
                 <include>**/*.properties</include>
             </includes>
         </fileSet>
+
+        <fileSet filtered="true" packaged="false">
+            <directory>src/test/resources/db_scripts</directory>
+            <includes>
+                <include>**/*.sql</include>
+            </includes>
+        </fileSet>
+
+        <fileSet filtered="true" packaged="false">
+            <directory>src/test/resources/features</directory>
+            <includes>
+                <include>**/*.feature</include>
+            </includes>
+        </fileSet>
     </fileSets>
 
 </archetype-descriptor>
