@@ -75,7 +75,7 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 mvn archetype:generate \
     -DarchetypeGroupId=com.ppossatto \
     -DarchetypeArtifactId=layered-archetype \
-    -DarchetypeVersion=1.3.0 \
+    -DarchetypeVersion=1.4.0 \
     -DarchetypeRepository=https://maven.pkg.github.com/Paulo-Possatto/layered-archetype \
     -DgroupId=<your groupId> \
     -DartifactId=<your artifactId> \
@@ -143,3 +143,39 @@ guarantees the problem will not happen again.
 QA tests need to run in the pipeline before production, so it's better to create a trigger when a PR to the main branch 
 is created. The QA tests are annotated with `@ActiveProfiles("qa")`, and you're free to add more tests, like regression
 tests, load tests...
+
+## Validation pipelines
+
+The validation pipelines only work with GitHub repositories when creating Pull Requests. There's only validation for 
+testing and naming, sonarqube validation is not added.
+
+Each pipeline will generate a docker image that will be available in the packages of the repository.
+
+### To develop branch pipeline
+
+The validation pipeline for creating a PR from a local branch, those being:
+
+- feat/*
+- fix/*
+- chore/*
+- hotfix/*
+
+Will check if the branch name follows the [conventional branch specification](https://conventional-branch.github.io/) 
+and validates the tests with the `local` profile, those can block the deployment pipeline if fails.
+
+The pipeline also run tests with the development profile without blocking the deployment process, it only gives you 
+information for any tests that can fail when deploying to quality assurance.
+
+### To release branch pipeline
+
+For the development environment, when creating a PR for the release branch, the pipeline will validate if the source is 
+from the develop branch and run tests with the profile set to `dev`, those have the potential to block the deployment 
+pipeline if any tests fail.
+
+This pipeline will also run tests for the Quality Assurance profile without having the potential to block 
+the deployment pipeline, it just points out problems that need to be fixed before sending to production.
+
+### To main branch pipeline
+
+When deploying to the main branch, the tests with the `qa` profile will run and has the potential to block the pipeline,
+so make sure the code is well-made to guarantee the deployment to production.

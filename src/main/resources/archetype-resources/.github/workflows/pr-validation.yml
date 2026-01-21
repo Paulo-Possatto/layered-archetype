@@ -1,0 +1,374 @@
+name: PR to Develop Validation
+
+on:
+  pull_request:
+    branches:
+      - develop
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  pull-requests: write
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  validate-branch-naming:
+    name: Validate Branch Naming
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.ref != 'develop'
+
+    steps:
+      - name: Check branch name pattern
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+
+          if [[ ! $BRANCH_NAME =~ ^(feat|fix|chore|hotfix)/.+$ ]]; then
+            echo "ERROR: Branch name '$BRANCH_NAME' does not follow the correct pattern"
+            echo "ALLOWED PATTERNS:"
+            echo "   - feat/feature-description"
+            echo "   - fix/fix-description"
+            echo "   - chore/chore-description"
+            echo "   - hotfix/hotfix-description"
+            echo "For more details about conventional branch name, check https://conventional-branch.github.io/"
+            exit 1
+          fi
+
+          echo "SUCCESS: Valid branch name: $BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+  mandatory-local-tests:
+    name: Mandatory Tests (local profile)
+    runs-on: ubuntu-latest
+    needs: validate-branch-naming
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build application
+        run: |
+          mvn clean package \
+            -P local \
+            -Dspring.profiles.active=local \
+            --no-transfer-progress
+
+      - name: Run mandatory tests with local profile
+        id: run-tests
+        run: |
+          mvn test \
+            -P local \
+            -Dspring.profiles.active=local \
+            --no-transfer-progress
+
+          TEST_RESULT=$?
+          echo "SUCCESS: All obligatory tests passed"
+          echo "test_passed=$([ $TEST_RESULT -eq 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "tests_passed=$([ $TEST_RESULT -eq 0 ] && echo 'true' || echo 'false')" >> $GITHUB_ENV
+
+      - name: Upload JAR artifact
+        if: env.tests_passed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jar-pr-${{ github.event.number }}
+          path: target/*.jar
+          retention-days: 3
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-pr-${{ github.event.number }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+
+  build-dev-docker-image:
+    name: Build & Push Dev Docker Image
+    runs-on: ubuntu-latest
+    needs: mandatory-local-tests
+    if: needs.mandatory-local-tests.outputs.test_passed == 'true'
+    permissions:
+      packages: write
+      contents: read
+
+    outputs:
+      docker_image: ${{ steps.save-image-info.outputs.docker_image }}
+      package_url: ${{ steps.save-image-info.outputs.package_url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: application-jar-pr-${{ github.event.number }}
+          path: target/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=dev-pr-${{ github.event.number }}
+            type=raw,value=dev-${{ github.sha }}
+          labels: |
+            maintainer=${{ github.actor }}
+            profile=dev
+            pr-number=${{ github.event.number }}
+            commit-sha=${{ github.sha }}
+            environment=development
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.dev
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            JAR_FILE=target/*.jar
+
+      - name: Save image information
+        id: save-image-info
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev-pr-${{ github.event.number }}"
+          echo "docker_image=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+          PACKAGE_URL="https://github.com/${{ github.repository }}/pkgs/container/$(echo ${{ env.IMAGE_NAME }} | sed 's/\//%2F/g')"
+          echo "package_url=$PACKAGE_URL" >> $GITHUB_OUTPUT
+
+          echo "SUCCESS: Docker image built and pushed: $IMAGE_TAG"
+          echo "Package URL: $PACKAGE_URL"
+
+  optional-container-tests:
+    name: Optional Container Tests
+    runs-on: ubuntu-latest
+    needs: build-dev-docker-image
+    continue-on-error: true
+    env:
+      DEV_IMAGE_TAG: ${{ needs.build-dev-docker-image.outputs.docker_image }}
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull Docker image
+        run: |
+          echo "Pulling image: ${{ env.DEV_IMAGE_TAG }}"
+          docker pull ${{ env.DEV_IMAGE_TAG }}
+
+      - name: Start container for testing
+        run: |
+          echo "Starting container..."
+          docker run -d \
+            --name app-dev-pr-${{ github.event.number }} \
+            -p 8080:8080 \
+            -e SPRING_PROFILES_ACTIVE=dev \
+            ${{ env.DEV_IMAGE_TAG }}
+
+          echo "Waiting for application to start..."
+          sleep 30
+
+          echo "Checking container status..."
+          docker ps | grep app-dev-pr-${{ github.event.number }}
+
+          echo "Performing health check..."
+          curl -f http://localhost:8080/actuator/health || echo "WARNING: Health check failed"
+
+      - name: Run contract tests against container
+        id: contract-tests
+        run: |
+          set +e
+
+          echo "Running contract tests..."
+          mvn test \
+            -P dev \
+            -Dtest="*ContractTest*" \
+            -Dspring.profiles.active=dev \
+            -Dservice.url=http://localhost:8080 \
+            --no-transfer-progress
+
+          CONTRACT_RESULT=$?
+
+          if [ $CONTRACT_RESULT -eq 0 ]; then
+            echo "SUCCESS: Contract tests passed"
+            echo "contract_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Contract tests failed (non-blocking)"
+            echo "contract_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run smoke tests against container
+        id: smoke-tests
+        run: |
+          set +e
+
+          echo "Running smoke tests..."
+          mvn test \
+            -P dev \
+            -Dtest="*SmokeTest*" \
+            -Dspring.profiles.active=dev \
+            -Dservice.url=http://localhost:8080 \
+            --no-transfer-progress
+
+          SMOKE_RESULT=$?
+
+          if [ $SMOKE_RESULT -eq 0 ]; then
+            echo "SUCCESS: Smoke tests passed"
+            echo "smoke_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Smoke tests failed (non-blocking)"
+            echo "smoke_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate test report
+        if: always()
+        run: |
+          echo "Test Results Summary:"
+          echo "========================"
+          echo "Contract Tests: ${{ steps.contract-tests.outputs.contract_tests_passed || 'NOT_RUN' }}"
+          echo "Smoke Tests: ${{ steps.smoke-tests.outputs.smoke_tests_passed || 'NOT_RUN' }}"
+          echo "========================"
+
+      - name: Cleanup containers
+        if: always()
+        run: |
+          docker stop app-dev-pr-${{ github.event.number }} || true
+          docker rm app-dev-pr-${{ github.event.number }} || true
+
+  pr-comment-report:
+    name: Create PR Report
+    runs-on: ubuntu-latest
+    needs: [mandatory-local-tests, optional-container-tests]
+    if: always()
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Generate PR report with Docker info
+        uses: actions/github-script@v7
+        env:
+          MANDATORY_PASSED: ${{ needs.mandatory-local-tests.outputs.test_passed == 'true' }}
+          CONTRACT_PASSED: ${{ needs.optional-container-tests.outputs.contract_tests_passed == 'true' }}
+          SMOKE_PASSED: ${{ needs.optional-container-tests.outputs.smoke_tests_passed == 'true' }}
+          DOCKER_IMAGE: ${{ needs.build-dev-docker-image.outputs.docker_image }}
+          PACKAGE_URL: ${{ needs.build-dev-docker-image.outputs.package_url }}
+        with:
+          script: |
+            const { owner, repo, number } = context.issue;
+
+            const mandatoryPassed = process.env.MANDATORY_PASSED === 'true';
+            const contractPassed = process.env.CONTRACT_PASSED === 'true';
+            const smokePassed = process.env.SMOKE_PASSED === 'true';
+            const dockerImage = process.env.DOCKER_IMAGE;
+            const packageUrl = process.env.PACKAGE_URL;
+
+            let report = "## PR VALIDATION REPORT\n\n";
+
+            report += "### OBLIGATORY TESTS (Local Profile)\n";
+            if (mandatoryPassed) {
+              report += "**ALL PASSED** - PR can be merged\n\n";
+            } else {
+              report += "**SOME TESTS FAILED** - Fix before merging\n\n";
+            }
+
+            if (mandatoryPassed && dockerImage) {
+              report += "### DOCKER IMAGE BUILT\n";
+              report += `- **Image Tag:** \`${dockerImage}\`\n`;
+              report += `- **Package URL:** [View Package](${packageUrl})\n\n`;
+
+              report += "### OPTIONAL CONTAINER TESTS (Dev Profile)\n";
+
+              const tests = [
+                { name: "Contract Tests", passed: contractPassed },
+                { name: "Smoke Tests", passed: smokePassed }
+              ];
+
+              tests.forEach(test => {
+                if (test.passed !== undefined) {
+                  const status = test.passed ? 'PASSED' : 'FAILED';
+                  const icon = test.passed ? '✅' : '❌';
+                  report += `${icon} **${test.name}:** ${status}\n`;
+                }
+              });
+
+              const failedTests = [contractPassed, smokePassed].filter(passed => passed === false);
+              if (failedTests.length > 0) {
+                report += "\n**WARNING:** Some optional tests failed. It is recommended to fix them before proceeding to release.\n";
+              }
+            } else if (mandatoryPassed) {
+              report += "### OPTIONAL TESTS\n";
+              report += "**NOT EXECUTED** - Docker image build failed\n";
+            }
+
+            report += `\n---\n*Report generated at ${new Date().toISOString()}*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('PR VALIDATION REPORT')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: number,
+                body: report
+              });
+            }
+
+            const state = mandatoryPassed ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha: context.payload.pull_request.head.sha,
+              state,
+              context: 'PR Validation',
+              description: mandatoryPassed ?
+                'PR ready to merge' :
+                'Fix tests before merging'
+            });

@@ -19,6 +19,9 @@
       <activation>
         <activeByDefault>true</activeByDefault>
       </activation>
+      <properties>
+        <spring.profiles.active>local</spring.profiles.active>
+      </properties>
     </profile>
     <profile>
       <id>dev</id>
@@ -28,6 +31,9 @@
           <value>development</value>
         </property>
       </activation>
+      <properties>
+        <spring.profiles.active>dev</spring.profiles.active>
+      </properties>
     </profile>
     <profile>
       <id>qa</id>
@@ -37,6 +43,9 @@
           <value>quality-assurance</value>
         </property>
       </activation>
+      <properties>
+        <spring.profiles.active>qa</spring.profiles.active>
+      </properties>
     </profile>
     <profile>
       <id>prod</id>
@@ -46,6 +55,9 @@
           <value>production</value>
         </property>
       </activation>
+      <properties>
+        <spring.profiles.active>prod</spring.profiles.active>
+      </properties>
     </profile>
   </profiles>
 

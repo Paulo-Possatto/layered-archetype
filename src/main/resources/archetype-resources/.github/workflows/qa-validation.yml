@@ -1,0 +1,503 @@
+name: Release to Main Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  validate-release-branch:
+    name: Validate Release Branch
+    runs-on: ubuntu-latest
+
+    outputs:
+      release_branch: ${{ steps.extract-release-branch.outputs.release_branch }}
+      version: ${{ steps.extract-version.outputs.version }}
+
+    steps:
+      - name: Check if source is release branch
+        run: |
+          if [[ ! "${{ github.event.pull_request.head.ref }}" =~ ^release/.* ]]; then
+            echo "ERROR: Pull Requests to the main branch must come from the release branch"
+            echo "Current Branch: ${{ github.event.pull_request.base.ref }}"
+            exit 1
+          fi
+          echo "SUCCESS: Valid source branch: ${{ github.event.pull_request.head.ref }}"
+
+      - name: Extract release branch name
+        id: extract-release-branch
+        run: |
+          echo "release_branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+
+      - name: Extract version from release branch
+        id: extract-version
+        run: |
+          RELEASE_BRANCH="${{ github.event.pull_request.head.ref }}"
+          VERSION=$(echo "$RELEASE_BRANCH" | sed 's/release\///')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+  mandatory-qa-tests:
+    name: Mandatory Tests (qa profile)
+    runs-on: ubuntu-latest
+    needs: validate-release-branch
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build application for production
+        run: |
+          mvn clean package \
+            -P qa \
+            -Dspring.profiles.active=qa \
+            --no-transfer-progress
+
+      - name: Run mandatory QA tests
+        id: qa-tests
+        run: |
+          mvn test \
+            -P qa \
+            -Dspring.profiles.active=qa \
+            --no-transfer-progress
+
+          TEST_RESULT=$?
+
+          if [ $TEST_RESULT -eq 0 ]; then
+            echo "SUCCESS: All QA tests passed"
+            echo "qa_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: QA tests failed - blocked for production deployment"
+            echo "qa_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload production JAR artifact
+        if: env.qa_tests_passed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-jar-${{ needs.validate-release-branch.outputs.version }}
+          path: target/*.jar
+          retention-days: 7
+
+      - name: Upload QA test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-test-results-${{ needs.validate-release-branch.outputs.version }}
+          path: target/surefire-reports/
+
+  build-production-docker-image:
+    name: Build & Push Production Docker Image
+    runs-on: ubuntu-latest
+    needs: [validate-release-branch, mandatory-qa-tests]
+    if: needs.mandatory-qa-tests.outputs.qa_tests_passed == 'true'
+    permissions:
+      packages: write
+      contents: read
+
+    outputs:
+      docker_image: ${{ steps.save-image-info.outputs.docker_image }}
+      package_url: ${{ steps.save-image-info.outputs.package_url }}
+      version: ${{ needs.validate-release-branch.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download production JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: production-jar-${{ needs.validate-release-branch.outputs.version }}
+          path: target/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=prod-${{ needs.validate-release-branch.outputs.version }}
+            type=raw,value=prod-pr-${{ github.event.number }}
+            type=raw,value=prod-${{ github.sha }}
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            maintainer=${{ github.actor }}
+            profile=production
+            pr-number=${{ github.event.number }}
+            commit-sha=${{ github.sha }}
+            environment=production
+            version=${{ needs.validate-release-branch.outputs.version }}
+
+      - name: Build and push production Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.prod
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            JAR_FILE=target/*.jar
+
+      - name: Save image information
+        id: save-image-info
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:prod-${{ needs.validate-release-branch.outputs.version }}"
+          echo "docker_image=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+          PACKAGE_URL="https://github.com/${{ github.repository }}/pkgs/container/$(echo ${{ env.IMAGE_NAME }} | sed 's/\//%2F/g')"
+          echo "package_url=$PACKAGE_URL" >> $GITHUB_OUTPUT
+
+          echo "SUCCESS: Production Docker image built and pushed: $IMAGE_TAG"
+          echo "Package URL: $PACKAGE_URL"
+
+  optional-production-checks:
+    name: Optional Production Checks
+    runs-on: ubuntu-latest
+    needs: build-production-docker-image
+    continue-on-error: true
+    env:
+      PROD_IMAGE_TAG: ${{ needs.build-production-docker-image.outputs.docker_image }}
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull production Docker image
+        run: |
+          echo "Pulling production image: ${{ env.PROD_IMAGE_TAG }}"
+          docker pull ${{ env.PROD_IMAGE_TAG }}
+
+      - name: Start production container
+        run: |
+          echo "Starting production container for smoke tests..."
+          docker run -d \
+            --name app-prod-pr-${{ github.event.number }} \
+            -p 8082:8080 \
+            -e SPRING_PROFILES_ACTIVE=prod \
+            -e JAVA_OPTS="-Xmx512m -Xms256m" \
+            ${{ env.PROD_IMAGE_TAG }}
+
+          echo "Waiting for production application to start..."
+          sleep 30
+
+          echo "Checking container status..."
+          docker ps | grep app-prod-pr-${{ github.event.number }}
+
+          echo "Performing production health check..."
+          curl -f http://localhost:8082/actuator/health || echo "WARNING: Production health check failed"
+
+      - name: Run production smoke tests
+        id: prod-smoke-tests
+        run: |
+          set +e
+
+          echo "Running production smoke tests..."
+          mvn test \
+            -P prod \
+            -Dtest="*ProductionSmokeTest*" \
+            -Dspring.profiles.active=prod \
+            -Dservice.url=http://localhost:8082 \
+            --no-transfer-progress
+
+          SMOKE_RESULT=$?
+
+          if [ $SMOKE_RESULT -eq 0 ]; then
+            echo "SUCCESS: Production smoke tests passed"
+            echo "prod_smoke_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Production smoke tests failed (non-blocking)"
+            echo "prod_smoke_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run production performance tests
+        id: prod-performance-tests
+        run: |
+          set +e
+
+          echo "Running production performance tests..."
+          mvn test \
+            -P prod \
+            -Dtest="*ProductionPerformanceTest*" \
+            -Dspring.profiles.active=prod \
+            -Dservice.url=http://localhost:8082 \
+            --no-transfer-progress
+
+          PERF_RESULT=$?
+
+          if [ $PERF_RESULT -eq 0 ]; then
+            echo "SUCCESS: Production performance tests passed"
+            echo "prod_performance_tests_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Production performance tests failed (non-blocking)"
+            echo "prod_performance_tests_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run OWASP dependency check
+        id: dependency-check
+        run: |
+          set +e
+
+          echo "Running OWASP dependency check..."
+          mvn org.owasp:dependency-check-maven:check \
+            -Dformat=HTML \
+            -Dformat=JSON \
+            --no-transfer-progress
+
+          if [ -f "target/dependency-check-report.html" ]; then
+            echo "SUCCESS: Dependency check completed"
+            echo "dependency_check_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Dependency check failed or no report generated"
+            echo "dependency_check_passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run vulnerability scan
+        id: vulnerability-scan
+        run: |
+          set +e
+
+          echo "Running vulnerability scan on Docker image..."
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            ${{ env.PROD_IMAGE_TAG }} \
+            --format table \
+            --exit-code 0 \
+            --severity HIGH,CRITICAL
+
+          echo "vulnerability_scan_completed=true" >> $GITHUB_OUTPUT
+
+      - name: Generate metrics report
+        id: metrics-report
+        run: |
+          set +e
+
+          echo "Generating production metrics..."
+
+          # Collect basic metrics
+          CONTAINER_ID=$(docker ps -q --filter "name=app-prod-pr-${{ github.event.number }}")
+          if [ ! -z "$CONTAINER_ID" ]; then
+            echo "Container metrics:"
+            docker stats --no-stream $CONTAINER_ID
+
+            # Memory usage
+            MEMORY_USAGE=$(docker stats --no-stream --format "{{.MemUsage}}" $CONTAINER_ID)
+            echo "memory_usage=$MEMORY_USAGE" >> $GITHUB_OUTPUT
+
+            # Response time
+            START_TIME=$(date +%s%3N)
+            curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/actuator/health || echo "000"
+            END_TIME=$(date +%s%3N)
+            RESPONSE_TIME=$((END_TIME - START_TIME))
+            echo "response_time_ms=$RESPONSE_TIME" >> $GITHUB_OUTPUT
+
+            echo "SUCCESS: Metrics collected"
+            echo "metrics_collected=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Container not running, cannot collect metrics"
+            echo "metrics_collected=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ needs.build-production-docker-image.outputs.version }}
+          path: |
+            target/dependency-check-report.*
+            target/dependency-check-report/
+
+      - name: Cleanup production containers
+        if: always()
+        run: |
+          docker stop app-prod-pr-${{ github.event.number }} || true
+          docker rm app-prod-pr-${{ github.event.number }} || true
+
+  pr-comment-report-production:
+    name: Create Production PR Report
+    runs-on: ubuntu-latest
+    needs: [mandatory-qa-tests, optional-production-checks]
+    if: always()
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Generate production PR report
+        uses: actions/github-script@v7
+        env:
+          QA_TESTS_PASSED: ${{ needs.mandatory-qa-tests.outputs.qa_tests_passed == 'true' }}
+          PROD_SMOKE_PASSED: ${{ needs.optional-production-checks.outputs.prod_smoke_tests_passed == 'true' }}
+          PROD_PERFORMANCE_PASSED: ${{ needs.optional-production-checks.outputs.prod_performance_tests_passed == 'true' }}
+          DEPENDENCY_CHECK_PASSED: ${{ needs.optional-production-checks.outputs.dependency_check_passed == 'true' }}
+          VULNERABILITY_SCAN_COMPLETED: ${{ needs.optional-production-checks.outputs.vulnerability_scan_completed == 'true' }}
+          METRICS_COLLECTED: ${{ needs.optional-production-checks.outputs.metrics_collected == 'true' }}
+          DOCKER_IMAGE: ${{ needs.build-production-docker-image.outputs.docker_image }}
+          PACKAGE_URL: ${{ needs.build-production-docker-image.outputs.package_url }}
+          VERSION: ${{ needs.build-production-docker-image.outputs.version }}
+        with:
+          script: |
+            const { owner, repo, number } = context.issue;
+
+            const qaPassed = process.env.QA_TESTS_PASSED === 'true';
+            const prodSmokePassed = process.env.PROD_SMOKE_PASSED === 'true';
+            const prodPerformancePassed = process.env.PROD_PERFORMANCE_PASSED === 'true';
+            const dependencyCheckPassed = process.env.DEPENDENCY_CHECK_PASSED === 'true';
+            const vulnerabilityScanCompleted = process.env.VULNERABILITY_SCAN_COMPLETED === 'true';
+            const metricsCollected = process.env.METRICS_COLLECTED === 'true';
+            const dockerImage = process.env.DOCKER_IMAGE;
+            const packageUrl = process.env.PACKAGE_URL;
+            const version = process.env.VERSION;
+
+            let report = `## PRODUCTION VALIDATION REPORT - v${version}\n\n`;
+
+            report += "### BLOCKING TESTS (QA Profile)\n";
+            if (qaPassed) {
+              report += "**ALL PASSED** - Ready for production deployment\n\n";
+            } else {
+              report += "**TESTS FAILED** - Blocked from production deployment\n\n";
+            }
+
+            if (qaPassed && dockerImage) {
+              report += "### PRODUCTION DOCKER IMAGE\n";
+              report += `- **Version:** ${version}\n`;
+              report += `- **Image Tag:** \`${dockerImage}\`\n`;
+              report += `- **Package URL:** [View Package](${packageUrl})\n\n`;
+
+              report += "### PRODUCTION READINESS CHECKS\n";
+
+              const prodChecks = [
+                { name: "Production Smoke Tests", passed: prodSmokePassed },
+                { name: "Production Performance Tests", passed: prodPerformancePassed },
+                { name: "Dependency Security Scan", passed: dependencyCheckPassed },
+                { name: "Container Vulnerability Scan", completed: vulnerabilityScanCompleted },
+                { name: "Production Metrics Collection", completed: metricsCollected }
+              ];
+
+              prodChecks.forEach(check => {
+                if (check.passed !== undefined) {
+                  const status = check.passed ? 'PASSED' : 'FAILED';
+                  const icon = check.passed ? '✅' : '❌';
+                  report += `${icon} **${check.name}:** ${status}\n`;
+                } else if (check.completed !== undefined) {
+                  const status = check.completed ? 'COMPLETED' : 'FAILED';
+                  const icon = check.completed ? '✅' : '❌';
+                  report += `${icon} **${check.name}:** ${status}\n`;
+                }
+              });
+
+              report += "\n### DEPLOYMENT INSTRUCTIONS\n";
+              report += "```bash\n";
+              report += `# Pull the production image\n`;
+              report += `docker pull ${dockerImage}\n\n`;
+              report += `# Run in production\n`;
+              report += `docker run -d \\\n`;
+              report += `  --name app-prod-${version} \\\n`;
+              report += `  -p 8080:8080 \\\n`;
+              report += `  -e SPRING_PROFILES_ACTIVE=prod \\\n`;
+              report += `  -e JAVA_OPTS="-Xmx512m -Xms256m" \\\n`;
+              report += `  ${dockerImage}\n`;
+              report += "```\n";
+
+              report += "\n### NEXT STEPS\n";
+              report += "1. Verify all production readiness checks\n";
+              report += "2. Deploy to production environment\n";
+              report += "3. Monitor application health and metrics\n";
+              report += "4. Update production documentation if needed\n";
+            } else if (qaPassed) {
+              report += "### PRODUCTION CHECKS\n";
+              report += "**NOT EXECUTED** - Docker image build failed\n";
+            }
+
+            report += `\n---\n*Report generated at ${new Date().toISOString()}*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('PRODUCTION VALIDATION REPORT')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: number,
+                body: report
+              });
+            }
+
+            const state = qaPassed ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha: context.payload.pull_request.head.sha,
+              state,
+              context: 'Production Validation',
+              description: qaPassed ?
+                `Ready for production deployment v${version}` :
+                'Blocked: QA tests failed'
+            });
+
+            if (qaPassed && dockerImage) {
+              try {
+                await github.rest.repos.createRelease({
+                  owner,
+                  repo,
+                  tag_name: `v${version}`,
+                  name: `Release v${version}`,
+                  body: report,
+                  draft: false,
+                  prerelease: false
+                });
+                console.log(`Release v${version} created successfully`);
+              } catch (error) {
+                console.log(`Note: Release creation skipped (might already exist): ${error.message}`);
+              }
+            }

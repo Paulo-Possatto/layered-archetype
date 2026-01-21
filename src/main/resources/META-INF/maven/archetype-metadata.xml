@@ -41,6 +41,13 @@
             </includes>
         </fileSet>
 
+        <fileSet filtered="true" packaged="false">
+            <directory>.github/workflows</directory>
+            <includes>
+                <include>**/*.yml</include>
+            </includes>
+        </fileSet>
+
         <fileSet filtered="true" packaged="true">
             <directory>src/main/java</directory>
             <includes>
