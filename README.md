@@ -4,7 +4,7 @@
 
 This project is a Maven Archetype for Spring Boot using the layered architecture. The layers are:
 
-- **config**: For configuring beans, security o external APIs.
+- **config**: For configuring beans, security and/or external APIs.
 - **controller**: For creating new endpoints for the application.
 - **dto**: Data-Transfer Objects:
   - **request**: DTOs used as a body request for the endpoints.
@@ -34,7 +34,11 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 - PostgreSQL Driver
 - Flyway Migration
 - Lombok
-- Jupiter (JUnit5 + Mockito)
+- JUnit 5
+- Mockito
+- Archunit
+- Rest Assured
+- Cucumber
 - Testcontainers
 - SpringDoc OpenAPI
 - Mapstruct
@@ -71,7 +75,7 @@ This project is a Maven Archetype for Spring Boot using the layered architecture
 mvn archetype:generate \
     -DarchetypeGroupId=com.ppossatto \
     -DarchetypeArtifactId=layered-archetype \
-    -DarchetypeVersion=1.2.0 \
+    -DarchetypeVersion=1.3.0 \
     -DarchetypeRepository=https://maven.pkg.github.com/Paulo-Possatto/layered-archetype \
     -DgroupId=<your groupId> \
     -DartifactId=<your artifactId> \
