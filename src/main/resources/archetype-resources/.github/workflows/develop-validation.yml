@@ -372,7 +372,7 @@ jobs:
                   report += `${icon} **${test.name}:** ${status}\n`;
                   if (!test.passed) failedQaTests++;
                 } else {
-                  report += `⚪ **${test.name}:** NOT EXECUTED\n`;
+                  report += `**${test.name}:** NOT EXECUTED\n`;
                 }
               });
 
@@ -386,7 +386,7 @@ jobs:
               report += "**NOT EXECUTED** - Docker image build failed\n";
             }
 
-            report += `\n---\n*Report generated at ${new Date().toISOString()}*`;
+            report += "\n---\n*Report generated at " + new Date().toISOString() + "*";
 
             const { data: comments } = await github.rest.issues.listComments({
               owner,

@@ -444,7 +444,7 @@ jobs:
               report += "**NOT EXECUTED** - Docker image build failed\n";
             }
 
-            report += `\n---\n*Report generated at ${new Date().toISOString()}*`;
+            report += "\n---\n*Report generated at " + new Date().toISOString() + "*";
 
             const { data: comments } = await github.rest.issues.listComments({
               owner,
